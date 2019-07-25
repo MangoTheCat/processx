@@ -133,8 +133,25 @@ static void processx__child_init(processx_handle_t* handle, int (*pipes)[2],
   int close_fd, use_fd, fd, i;
   const char *out_files[3] = { std_in, std_out, std_err };
   int min_fd = 0;
+  char *handle_env = 0, *env_ptr = 0;
+  int ret, env_size = 0;
+  const char *env_prefix = "__PROCESSX_CONNECTIONS=";
+  int env_prefix_len = strlen(env_prefix);
 
   setsid();
+
+  if (stdio_count > 3) {
+    env_size = stdio_count * 6 + env_prefix_len;
+    handle_env = env_ptr = malloc(env_size + 1);
+    if (!handle_env) {
+      processx__write_int(error_fd, -errno);
+      raise(SIGKILL);
+    }
+    memset(handle_env, 0, env_size);
+    memcpy(env_ptr, env_prefix, env_prefix_len);
+    env_size -= env_prefix_len;
+    env_ptr += env_prefix_len;
+  }
 
   /* Do we need a pty? */
   if (pty_name) {
@@ -227,9 +244,6 @@ static void processx__child_init(processx_handle_t* handle, int (*pipes)[2],
     } else if (use_fd < 0) {
       /* Otherwise we open a file. If the stdin/out/err is not
 	 requested, then we open a file to /dev/null */
-      /* For fd >= 3, the fd is just passed, and we just use it,
-	 no need to open any file */
-      if (fd >= 3) continue;
 
       if (out_files[fd]) {
 	/* A file was requested, open it */
@@ -260,6 +274,19 @@ static void processx__child_init(processx_handle_t* handle, int (*pipes)[2],
       processx__cloexec_fcntl(use_fd, 0);
     } else {
       fd = dup2(use_fd, fd);
+    }
+
+    /* Pass the extra fds in an env var. This is mostly redundant on Unix,
+       because they'll always be 3, 4, etc. But on Windows we do have
+       such an env var, so let's have it here as well. */
+    if (fd >= 3) {
+      ret = snprintf(env_ptr, env_size, fd == 3 ? "%d" : ";%d", fd);
+      if (ret < 0) {
+        processx__write_int(error_fd, -errno);
+        raise(SIGKILL);
+      }
+      env_size -= ret;
+      env_ptr += ret;
     }
 
     if (fd == -1) {
@@ -296,6 +323,13 @@ static void processx__child_init(processx_handle_t* handle, int (*pipes)[2],
   if (putenv(strdup(tree_id))) {
     processx__write_int(error_fd, - errno);
     raise(SIGKILL);
+  }
+
+  if (handle_env) {
+    if (putenv(strdup(handle_env))) {
+      processx__write_int(error_fd, - errno);
+      raise(SIGKILL);
+    }
   }
 
   execvp(command, args);
@@ -403,9 +437,10 @@ skip:
 
 SEXP processx_exec(SEXP command, SEXP args, SEXP std_in, SEXP std_out,
 		   SEXP std_err, SEXP pty, SEXP pty_options,
-                   SEXP connections, SEXP env, SEXP windows_verbatim_args,
-                   SEXP windows_hide_window, SEXP private, SEXP cleanup,
-                   SEXP wd, SEXP encoding, SEXP tree_id) {
+                   SEXP connections, SEXP conn_types, SEXP env,
+                   SEXP windows_verbatim_args, SEXP windows_hide_window,
+                   SEXP private, SEXP cleanup, SEXP wd, SEXP encoding,
+                   SEXP tree_id) {
 
   char *ccommand = processx__tmp_string(command, 0);
   char **cargs = processx__tmp_character(args);
@@ -419,6 +454,7 @@ SEXP processx_exec(SEXP command, SEXP args, SEXP std_in, SEXP std_out,
   const char *ctree_id = CHAR(STRING_ELT(tree_id, 0));
   processx_options_t options = { 0 };
   int num_connections = LENGTH(connections) + 3;
+  int *c_conn_types = INTEGER(conn_types);
 
   pid_t pid;
   int err, exec_errorno = 0, status;
@@ -466,9 +502,18 @@ SEXP processx_exec(SEXP command, SEXP args, SEXP std_in, SEXP std_out,
   }
 
   for (i = 0; i < num_connections - 3; i++) {
-    processx_connection_t *ccon =
-      R_ExternalPtrAddr(VECTOR_ELT(connections, i));
-    int fd = processx_c_connection_fileno(ccon);
+    int fd;
+    if (c_conn_types[i] == 1) {
+      /* connection */
+      processx_connection_t *ccon =
+        R_ExternalPtrAddr(VECTOR_ELT(connections, i));
+      fd = processx_c_connection_fileno(ccon);
+    } else if (c_conn_types[i] == 2) {
+      int *fdp = R_ExternalPtrAddr(VECTOR_ELT(connections, i));
+      fd = *fdp;
+    } else {
+      R_THROW_ERROR("Unknown processx connection/handle type");
+    }
     pipes[i + 3][1] = fd;
   }
 

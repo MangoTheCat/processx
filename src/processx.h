@@ -44,8 +44,8 @@ extern "C" {
 
 SEXP processx_exec(SEXP command, SEXP args,
 		   SEXP std_in,  SEXP std_out, SEXP std_err, SEXP pty,
-		   SEXP pty_options, SEXP connections, SEXP env,
-		   SEXP windows_verbatim_args,
+		   SEXP pty_options, SEXP connections, SEXP conn_types,
+                   SEXP env, SEXP windows_verbatim_args,
 		   SEXP windows_hide_window, SEXP private_, SEXP cleanup,
 		   SEXP wd, SEXP encoding, SEXP tree_id);
 SEXP processx_wait(SEXP status, SEXP timeout);
@@ -72,6 +72,12 @@ SEXP processx_disable_crash_dialog();
 
 SEXP processx_base64_encode(SEXP array);
 SEXP processx_base64_decode(SEXP array);
+
+SEXP processx_handle_create(SEXP desc);
+SEXP processx_handle_describe(SEXP handle);
+
+SEXP processx__mmap_pack(SEXP filename, SEXP data);
+SEXP processx__mmap_unpack(SEXP fd);
 
 /* Common declarations */
 
